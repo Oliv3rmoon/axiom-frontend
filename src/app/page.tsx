@@ -143,20 +143,35 @@ export default function Home() {
     addLog("Loading memories...");
 
     try {
-      // Fetch memories and inject as conversational context
+      // Smart memory retrieval: only load CORE memories at conversation start
+      // Per-turn relevant memories are retrieved by the Cognitive Core
       let memoryContext = "";
       try {
-        const memRes = await fetch(`${BACKEND_URL}/api/memories`);
+        const memRes = await fetch(`${BACKEND_URL}/api/memories/context`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: "", max_core: 5, max_relevant: 3 }),
+        });
         const memData = await memRes.json();
-        if (memData.memories && memData.memories.length > 0) {
-          const mems = memData.memories
-            .sort((a: any, b: any) => (b.importance || 0) - (a.importance || 0))
-            .map((m: any) => `[${m.category}, importance: ${m.importance}] ${m.memory}`)
-            .join("\n");
-          memoryContext = `YOUR MEMORIES OF THIS PERSON (from previous conversations):\n${mems}\n\nUse these memories naturally. Reference them as things you remember, not as data you retrieved. Greet them like someone you know.`;
-          addLog(`📚 Loaded ${memData.memories.length} memories`);
+        if (memData.context) {
+          memoryContext = memData.context + "\n\nUse these memories naturally. The Cognitive Core will retrieve additional relevant memories each turn based on what is being discussed.";
+          addLog(`📚 Smart memory: ${memData.core_count} core + ${memData.relevant_count} relevant (of ${memData.total} total)`);
         }
-      } catch (e) {}
+      } catch (e) {
+        // Fallback: load all memories if smart retrieval fails
+        try {
+          const fbRes = await fetch(`${BACKEND_URL}/api/memories`);
+          const fbData = await fbRes.json();
+          if (fbData.memories && fbData.memories.length > 0) {
+            const mems = fbData.memories
+              .filter((m: any) => m.importance >= 9)
+              .map((m: any) => `[${m.category}] ${m.memory}`)
+              .join("\n");
+            memoryContext = `CORE MEMORIES:\n${mems}`;
+            addLog(`📚 Fallback: loaded ${fbData.memories.filter((m: any) => m.importance >= 9).length} core memories`);
+          }
+        } catch (e2) {}
+      }
 
       // Fetch face data
       let faceContext = "";
