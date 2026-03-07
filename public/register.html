@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head><title>Register Face — AXIOM</title></head>
+<body style="background:#0a0a0a;color:#e0e0e0;font-family:sans-serif;text-align:center;padding:40px">
+<h1>AXIOM Face Registration</h1>
+<video id="v" autoplay playsinline style="width:480px;border-radius:12px;margin:20px"></video>
+<br>
+<input id="name" type="text" value="Andrew" style="padding:10px;font-size:16px;border-radius:8px;border:1px solid #333;background:#1a1a1a;color:#fff;margin:10px">
+<br>
+<button onclick="capture()" style="padding:12px 30px;font-size:16px;background:#c084fc;color:#000;border:none;border-radius:8px;cursor:pointer;font-weight:bold;margin:10px">Register My Face</button>
+<p id="status"></p>
+<script>
+const BACKEND = "https://axiom-backend-production-dfba.up.railway.app";
+const video = document.getElementById('v');
+navigator.mediaDevices.getUserMedia({video:true}).then(s => video.srcObject = s);
+
+async function capture() {
+  const status = document.getElementById('status');
+  const name = document.getElementById('name').value;
+  status.textContent = 'Capturing...';
+  
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  const b64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+  
+  status.textContent = 'Registering with AXIOM...';
+  try {
+    const res = await fetch(BACKEND + '/api/register-face', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, frame: b64})
+    });
+    const data = await res.json();
+    if (data.success) {
+      status.innerHTML = '✅ <b>' + data.name + '</b> — ' + data.action + '! AXIOM will now recognize you.';
+    } else {
+      status.textContent = '❌ ' + (data.error || JSON.stringify(data));
+    }
+  } catch(e) {
+    status.textContent = '❌ ' + e.message;
+  }
+}
+</script>
+</body>
+</html>
