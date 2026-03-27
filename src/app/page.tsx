@@ -456,7 +456,7 @@ export default function Home() {
   const startScreenShare = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { cursor: "always" as any },
+        video: true,
         audio: screenAudioMode === "tab",
       });
       screenStreamRef.current = stream;
