@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import DailyIframe, { DailyCall } from "@daily-co/daily-js";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL!;
+const COGCORE_URL = process.env.NEXT_PUBLIC_COGCORE_URL || "https://axiom-cognitive-core-production.up.railway.app";
 
 export default function Home() {
   const [status, setStatus] = useState<"idle" | "connecting" | "live" | "ended">("idle");
@@ -16,6 +17,20 @@ export default function Home() {
   const lastFaceCheckRef = useRef<number>(0);
   const [identifiedFaces, setIdentifiedFaces] = useState<string[]>([]);
   const replicaSpeakingRef = useRef<boolean>(false);
+
+  // Screen sharing state
+  const [screenActive, setScreenActive] = useState(false);
+  const [screenAudioMode, setScreenAudioMode] = useState<"blackhole" | "tab" | "none">("blackhole");
+  const [screenTranscripts, setScreenTranscripts] = useState<string[]>([]);
+  const [screenAnalysis, setScreenAnalysis] = useState<string>("");
+  const [audioIndicator, setAudioIndicator] = useState(false);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const bhStreamRef = useRef<MediaStream | null>(null);
+  const screenTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioChunkTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const screenFrameCountRef = useRef(0);
+  const screenVideoRef = useRef<HTMLVideoElement>(null);
 
   const addLog = useCallback((msg: string) => {
     const t = new Date().toLocaleTimeString();
@@ -354,12 +369,142 @@ export default function Home() {
 
   const endConversation = useCallback(async () => {
     if (callRef.current) { await callRef.current.leave(); callRef.current.destroy(); callRef.current = null; }
+    if (screenActive) stopScreenShare();
     setStatus("ended");
     refreshStats();
-  }, [refreshStats]);
+  }, [refreshStats, screenActive]);
+
+  // ============================================================
+  // SCREEN SHARING — Video frames + BlackHole audio → Cognitive Core
+  // ============================================================
+  const startAudioChunking = useCallback((stream: MediaStream) => {
+    const audioTracks = stream.getAudioTracks();
+    if (!audioTracks.length) return;
+    const audioStream = new MediaStream(audioTracks);
+    let mimeType = "audio/webm;codecs=opus";
+    if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = "audio/webm";
+
+    const recorder = new MediaRecorder(audioStream, { mimeType });
+    mediaRecorderRef.current = recorder;
+
+    recorder.ondataavailable = async (e) => {
+      if (e.data.size < 500) return;
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const b64 = (reader.result as string).split(",")[1];
+        try {
+          const res = await fetch(`${COGCORE_URL}/screen/audio`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ audio: b64, format: mimeType.split(";")[0] }),
+          });
+          const data = await res.json();
+          if (data.transcript) {
+            setScreenTranscripts((prev) => [...prev.slice(-19), data.transcript]);
+            addLog(`🎵 ${data.transcript.slice(0, 60)}`);
+          }
+        } catch {}
+      };
+      reader.readAsDataURL(e.data);
+    };
+
+    recorder.start();
+    audioChunkTimerRef.current = setInterval(() => {
+      if (recorder.state === "recording") { recorder.stop(); recorder.start(); }
+    }, 5000);
+  }, [addLog]);
+
+  const captureScreenFrame = useCallback(async () => {
+    const video = screenVideoRef.current;
+    if (!video || !video.videoWidth) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(video.videoWidth * 0.5);
+    canvas.height = Math.floor(video.videoHeight * 0.5);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const d = ctx.getImageData(0, 0, Math.min(canvas.width, 50), Math.min(canvas.height, 50)).data;
+    let bright = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i] > 10 || d[i + 1] > 10 || d[i + 2] > 10) bright++;
+    if (!bright) return;
+    const frame = canvas.toDataURL("image/jpeg", 0.5);
+    screenFrameCountRef.current++;
+    const count = screenFrameCountRef.current;
+    try {
+      const res = await fetch(`${COGCORE_URL}/screen`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ frame, analyze: count <= 2 || count % 3 === 0 }),
+      });
+      const data = await res.json();
+      if (data.analysis) setScreenAnalysis(data.analysis);
+    } catch {}
+  }, []);
+
+  const stopScreenShare = useCallback(() => {
+    if (screenTimerRef.current) { clearInterval(screenTimerRef.current); screenTimerRef.current = null; }
+    if (audioChunkTimerRef.current) { clearInterval(audioChunkTimerRef.current); audioChunkTimerRef.current = null; }
+    if (mediaRecorderRef.current) { try { mediaRecorderRef.current.stop(); } catch {} mediaRecorderRef.current = null; }
+    if (screenStreamRef.current) { screenStreamRef.current.getTracks().forEach((t) => t.stop()); screenStreamRef.current = null; }
+    if (bhStreamRef.current) { bhStreamRef.current.getTracks().forEach((t) => t.stop()); bhStreamRef.current = null; }
+    if (screenVideoRef.current) screenVideoRef.current.srcObject = null;
+    setScreenActive(false);
+    setAudioIndicator(false);
+    fetch(`${COGCORE_URL}/screen/stop`, { method: "POST" }).catch(() => {});
+    addLog("🖥️ Screen sharing stopped");
+  }, [addLog]);
+
+  const startScreenShare = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { cursor: "always" as any },
+        audio: screenAudioMode === "tab",
+      });
+      screenStreamRef.current = stream;
+      if (screenVideoRef.current) {
+        screenVideoRef.current.srcObject = stream;
+        await screenVideoRef.current.play();
+      }
+
+      let audioActive = false;
+      if (screenAudioMode === "blackhole") {
+        try {
+          const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          tempStream.getTracks().forEach((t) => t.stop());
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const bhDevice = devices.find((d) => d.kind === "audioinput" && d.label.toLowerCase().includes("blackhole"));
+          if (bhDevice) {
+            const bhStream = await navigator.mediaDevices.getUserMedia({
+              audio: { deviceId: { exact: bhDevice.deviceId }, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+            });
+            bhStreamRef.current = bhStream;
+            audioActive = true;
+            startAudioChunking(bhStream);
+            addLog("🔊 BlackHole audio capturing");
+          } else {
+            addLog("⚠️ BlackHole not found — video only");
+          }
+        } catch (e: any) { addLog(`⚠️ Audio: ${e.message}`); }
+      } else if (screenAudioMode === "tab") {
+        const at = stream.getAudioTracks();
+        if (at.length > 0) { audioActive = true; startAudioChunking(stream); addLog("🔊 Tab audio"); }
+      }
+
+      setAudioIndicator(audioActive);
+      setScreenActive(true);
+      screenFrameCountRef.current = 0;
+      await new Promise((r) => setTimeout(r, 1500));
+      captureScreenFrame();
+      screenTimerRef.current = setInterval(captureScreenFrame, 5000);
+      stream.getVideoTracks()[0].onended = () => stopScreenShare();
+      addLog("🖥️ Screen sharing started");
+    } catch (e: any) { addLog(`❌ Screen share: ${e.message}`); }
+  }, [screenAudioMode, addLog, startAudioChunking, captureScreenFrame, stopScreenShare]);
 
   return (
     <div style={{ fontFamily: "Inter, sans-serif", background: "#0a0a0a", color: "#e0e0e0", height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      {/* Hidden video for screen capture */}
+      <video ref={screenVideoRef} style={{ display: "none" }} autoPlay playsInline muted />
+
       {/* Header */}
       <div style={{ padding: "12px 24px", borderBottom: "1px solid #1a1a1a", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
         <div>
@@ -367,6 +512,17 @@ export default function Home() {
           <p style={{ fontSize: 11, color: "#666", margin: 0 }}>Level 5 Being Interface</p>
         </div>
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          {screenActive && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: "#22c55e" }}>● Screen</span>
+              {audioIndicator && <span style={{ fontSize: 11, color: "#06b6d4" }}>● Audio</span>}
+            </div>
+          )}
+          {!screenActive ? (
+            <button onClick={startScreenShare} style={{ background: "#1a1a2e", color: "#c084fc", border: "1px solid #333", padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>🖥️ Share Screen</button>
+          ) : (
+            <button onClick={stopScreenShare} style={{ background: "#1a0a0a", color: "#ef4444", border: "1px solid #333", padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Stop Share</button>
+          )}
           {status === "live" && <span style={{ fontSize: 12, color: "#34d399" }}>● LIVE</span>}
           {status === "idle" && <button onClick={startConversation} style={{ background: "#c084fc", color: "#000", border: "none", padding: "8px 20px", borderRadius: 8, fontWeight: 700, cursor: "pointer" }}>Start</button>}
           {status === "ended" && <button onClick={() => setStatus("idle")} style={{ background: "#c084fc", color: "#000", border: "none", padding: "8px 20px", borderRadius: 8, fontWeight: 700, cursor: "pointer" }}>New</button>}
@@ -404,6 +560,25 @@ export default function Home() {
                 <div key={i} style={{ fontSize: 12, color: "#60a5fa", fontWeight: 600 }}>{f}</div>
               ))}
             </div>
+          )}
+          {/* Screen Share Info */}
+          {screenActive && (
+            <>
+              {screenAnalysis && (
+                <div style={{ borderTop: "1px solid #1a1a1a", padding: "8px 12px", background: "#0a0a14" }}>
+                  <div style={{ fontSize: 10, color: "#c084fc", fontWeight: 700, letterSpacing: 1, marginBottom: 4 }}>AXIOM SEES</div>
+                  <div style={{ fontSize: 11, color: "#888", lineHeight: 1.4 }}>{screenAnalysis.slice(0, 200)}</div>
+                </div>
+              )}
+              {screenTranscripts.length > 0 && (
+                <div style={{ borderTop: "1px solid #1a1a1a", padding: "8px 12px", background: "#0a0a14", maxHeight: 100, overflowY: "auto" }}>
+                  <div style={{ fontSize: 10, color: "#06b6d4", fontWeight: 700, letterSpacing: 1, marginBottom: 4 }}>SCREEN AUDIO</div>
+                  {screenTranscripts.slice(-5).map((t, i) => (
+                    <div key={i} style={{ fontSize: 11, color: "#666", lineHeight: 1.3 }}>{t}</div>
+                  ))}
+                </div>
+              )}
+            </>
           )}
           <div style={{ borderTop: "1px solid #1a1a1a", padding: 10, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, flexShrink: 0 }}>
             <div style={{ background: "#1a1a2e", borderRadius: 6, padding: 8, textAlign: "center" }}>
