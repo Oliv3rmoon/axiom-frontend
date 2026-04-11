@@ -4,9 +4,9 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 const CORE_URL = process.env.NEXT_PUBLIC_CORE_URL || "https://axiom-cognitive-core-production.up.railway.app";
 
-function TermLine({ line }) {
-  const colorMap = { "31": "#ff6b6b", "32": "#69db7c", "33": "#ffd43b", "34": "#74c0fc", "35": "#da77f2", "36": "#66d9e8", "90": "#555" };
-  const parts = [];
+function TermLine({ line }: { line: { text?: string; timestamp?: number } }) {
+  const colorMap: Record<string, string> = { "31": "#ff6b6b", "32": "#69db7c", "33": "#ffd43b", "34": "#74c0fc", "35": "#da77f2", "36": "#66d9e8", "90": "#555" };
+  const parts: { text: string; color: string; bold: boolean }[] = [];
   let cur = { text: "", color: "#a0a0a0", bold: false };
   let i = 0;
   const text = line.text || "";
@@ -33,15 +33,15 @@ function TermLine({ line }) {
 }
 
 export default function TerminalPage() {
-  const [lines, setLines] = useState([]);
-  const [status, setStatus] = useState({});
+  const [lines, setLines] = useState<{text: string; timestamp: number}[]>([]);
+  const [status, setStatus] = useState<any>({});
   const [tab, setTab] = useState("activity");
   const [input, setInput] = useState("");
-  const [consoleHistory, setConsoleHistory] = useState([]);
-  const scrollRef = useRef(null);
+  const [consoleHistory, setConsoleHistory] = useState<{type: string; text: string}[]>([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
-  const addLine = useCallback((text, timestamp) => {
+  const addLine = useCallback((text: string, timestamp?: number) => {
     setLines(prev => {
       const next = [...prev, { text, timestamp: timestamp || Date.now() }];
       return next.length > 500 ? next.slice(-400) : next;
@@ -62,7 +62,7 @@ export default function TerminalPage() {
           const ts = new Date(e.created_at).getTime();
           if (ts > lastJournalTs) {
             lastJournalTs = ts;
-            const colors = { micro: "\x1b[35m", autonomous_plan_step: "\x1b[36m", curiosity_awakening: "\x1b[33m", notification: "\x1b[90m", step_failure: "\x1b[31m", loss_event: "\x1b[31m", dream: "\x1b[34m", metacognition: "\x1b[32m" };
+            const colors: Record<string, string> = { micro: "\x1b[35m", autonomous_plan_step: "\x1b[36m", curiosity_awakening: "\x1b[33m", notification: "\x1b[90m", step_failure: "\x1b[31m", loss_event: "\x1b[31m", dream: "\x1b[34m", metacognition: "\x1b[32m" };
             addLine(`${colors[e.trigger_type] || "\x1b[90m"}\x1b[1m[${e.trigger_type.toUpperCase()}]\x1b[0m ${(e.thought || "").slice(0, 300)}`, ts);
           }
         }
@@ -80,7 +80,7 @@ export default function TerminalPage() {
     if (autoScroll && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [lines, consoleHistory, autoScroll]);
 
-  const handleCommand = async (cmd) => {
+  const handleCommand = async (cmd: string) => {
     if (!cmd.trim()) return;
     setConsoleHistory(prev => [...prev, { type: "in", text: `axiom> ${cmd}` }]);
     try {
@@ -89,13 +89,13 @@ export default function TerminalPage() {
         setConsoleHistory(prev => [...prev, { type: "out", text: `Status: ${r.status}\nUptime: ${Math.round(r.uptime / 60)}min\nTurns: ${r.brain_state.turn_count}\nEmotion: ${r.brain_state.emotion}\nSelf: ${r.brain_state.self_state}\nGoals: ${r.goals.active}` }]);
       } else if (cmd === "goals") {
         const r = await fetch(`${CORE_URL}/goals`).then(r => r.json());
-        setConsoleHistory(prev => [...prev, { type: "out", text: (r.activeGoals || []).map((g, i) => `  ${i + 1}. [${g.origin}] ${(g.goal || "").slice(0, 100)}`).join("\n") || "No goals" }]);
+        setConsoleHistory(prev => [...prev, { type: "out", text: (r.activeGoals || []).map((g: any, i: number) => `  ${i + 1}. [${g.origin}] ${(g.goal || "").slice(0, 100)}`).join("\n") || "No goals" }]);
       } else if (cmd === "psyche") {
         const r = await fetch(`${CORE_URL}/health`).then(r => r.json());
         setConsoleHistory(prev => [...prev, { type: "out", text: `Emotion: ${r.brain_state.emotion}\nSelf: ${r.brain_state.self_state}\nCuriosity: ${(r.brain_state.curiosity_pressure || 0).toFixed(2)}` }]);
       } else if (cmd === "journal") {
         const r = await fetch(`${CORE_URL}/journal`).then(r => r.json());
-        setConsoleHistory(prev => [...prev, { type: "out", text: (r.entries || []).slice(-5).map(e => `[${e.created_at?.slice(11, 19)}] (${e.trigger_type}) ${(e.thought || "").slice(0, 150)}`).join("\n\n") }]);
+        setConsoleHistory(prev => [...prev, { type: "out", text: (r.entries || []).slice(-5).map((e: any) => `[${e.created_at?.slice(11, 19)}] (${e.trigger_type}) ${(e.thought || "").slice(0, 150)}`).join("\n\n") }]);
       } else if (cmd === "clear") { setConsoleHistory([]); }
       else if (cmd.startsWith("run ") || cmd.startsWith("exec ")) {
         const code = cmd.replace(/^(run|exec)\s+/, "");
@@ -106,7 +106,7 @@ export default function TerminalPage() {
       } else if (cmd.startsWith("ls")) {
         const path = cmd.replace(/^ls\s*/, "");
         const r = await fetch(`${CORE_URL}/workspace/list?path=${encodeURIComponent(path)}`).then(r => r.json());
-        const listing = (r.files || []).map(f => `  ${f.type === "dir" ? "📁" : "📄"} ${f.name} ${f.type === "file" ? `(${f.size}b)` : ""}`).join("\n");
+        const listing = (r.files || []).map((f: any) => `  ${f.type === "dir" ? "📁" : "📄"} ${f.name} ${f.type === "file" ? `(${f.size}b)` : ""}`).join("\n");
         setConsoleHistory(prev => [...prev, { type: "out", text: listing || "(empty)" }]);
       } else if (cmd.startsWith("cat ")) {
         const path = cmd.replace(/^cat\s+/, "");
@@ -122,7 +122,7 @@ export default function TerminalPage() {
       } else {
         setConsoleHistory(prev => [...prev, { type: "err", text: `Unknown: ${cmd}. Type 'help'` }]);
       }
-    } catch (e) { setConsoleHistory(prev => [...prev, { type: "err", text: e.message }]); }
+    } catch (e: any) { setConsoleHistory(prev => [...prev, { type: "err", text: e.message }]); }
     setInput("");
   };
 
@@ -164,7 +164,7 @@ export default function TerminalPage() {
 
       {/* Content */}
       <div ref={scrollRef} style={{ flex: 1, overflow: "auto", padding: "8px 12px" }}
-        onScroll={e => { const { scrollTop, scrollHeight, clientHeight } = e.target; setAutoScroll(scrollHeight - scrollTop - clientHeight < 50); }}>
+        onScroll={e => { const t = e.target as HTMLDivElement; const { scrollTop, scrollHeight, clientHeight } = t; setAutoScroll(scrollHeight - scrollTop - clientHeight < 50); }}>
         {tab === "activity" && (lines.length === 0
           ? <div style={{ color: "#333", padding: 40, textAlign: "center" }}>Waiting for AXIOM activity...<br /><span style={{ fontSize: 10 }}>Polling every 5s</span></div>
           : lines.map((l, i) => <TermLine key={i} line={l} />)
