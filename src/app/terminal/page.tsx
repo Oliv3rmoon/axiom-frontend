@@ -97,8 +97,28 @@ export default function TerminalPage() {
         const r = await fetch(`${CORE_URL}/journal`).then(r => r.json());
         setConsoleHistory(prev => [...prev, { type: "out", text: (r.entries || []).slice(-5).map(e => `[${e.created_at?.slice(11, 19)}] (${e.trigger_type}) ${(e.thought || "").slice(0, 150)}`).join("\n\n") }]);
       } else if (cmd === "clear") { setConsoleHistory([]); }
+      else if (cmd.startsWith("run ") || cmd.startsWith("exec ")) {
+        const code = cmd.replace(/^(run|exec)\s+/, "");
+        const lang = cmd.includes(".py") || code.includes("import ") ? "python" : "javascript";
+        setConsoleHistory(prev => [...prev, { type: "out", text: `Executing ${lang}...` }]);
+        const r = await fetch(`${CORE_URL}/execute`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, language: lang }) }).then(r => r.json());
+        setConsoleHistory(prev => [...prev, { type: r.success ? "out" : "err", text: r.success ? (r.output || "(no output)") : `Error: ${r.error}` }]);
+      } else if (cmd.startsWith("ls")) {
+        const path = cmd.replace(/^ls\s*/, "");
+        const r = await fetch(`${CORE_URL}/workspace/list?path=${encodeURIComponent(path)}`).then(r => r.json());
+        const listing = (r.files || []).map(f => `  ${f.type === "dir" ? "📁" : "📄"} ${f.name} ${f.type === "file" ? `(${f.size}b)` : ""}`).join("\n");
+        setConsoleHistory(prev => [...prev, { type: "out", text: listing || "(empty)" }]);
+      } else if (cmd.startsWith("cat ")) {
+        const path = cmd.replace(/^cat\s+/, "");
+        const r = await fetch(`${CORE_URL}/workspace/read`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) }).then(r => r.json());
+        setConsoleHistory(prev => [...prev, { type: r.success ? "out" : "err", text: r.success ? r.content : `Error: ${r.error}` }]);
+      } else if (cmd.startsWith("source ")) {
+        const file = cmd.replace(/^source\s+/, "");
+        const r = await fetch(`${CORE_URL}/workspace/source?file=${encodeURIComponent(file)}`).then(r => r.json());
+        setConsoleHistory(prev => [...prev, { type: r.success ? "out" : "err", text: r.success ? r.content.slice(0, 3000) + (r.content.length > 3000 ? "\n... (truncated)" : "") : `Error: ${r.error}` }]);
+      }
       else if (cmd === "help") {
-        setConsoleHistory(prev => [...prev, { type: "out", text: "Commands:\n  status   — System health\n  goals    — Active goals\n  psyche   — Emotional state\n  journal  — Recent thoughts\n  clear    — Clear console\n  help     — This message" }]);
+        setConsoleHistory(prev => [...prev, { type: "out", text: "Commands:\n  status     — System health\n  goals      — Active goals\n  psyche     — Emotional state\n  journal    — Recent thoughts\n  run <code> — Execute JS/Python code\n  ls [path]  — List workspace files\n  cat <path> — Read workspace file\n  source <f> — Read AXIOM source code\n  clear      — Clear console\n  help       — This message" }]);
       } else {
         setConsoleHistory(prev => [...prev, { type: "err", text: `Unknown: ${cmd}. Type 'help'` }]);
       }
